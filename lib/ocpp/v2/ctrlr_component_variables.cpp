@@ -265,6 +265,10 @@ const ComponentVariable WebsocketPongTimeout = {
         "WebsocketPongTimeout",
     }),
 };
+/**
+ * @brief 内部自定义的监视器 处理间隔
+ * 单位：秒
+ */
 const ComponentVariable MonitorsProcessingInterval = {
     ControllerComponents::InternalCtrlr,
     std::optional<Variable>({
@@ -732,36 +736,69 @@ const ComponentVariable MonitoringCtrlrAvailable = {
         "Available",
     }),
 };
+/**
+ * @brief ClearVariableMonitoringRequest消息大小（以字节为单位）。
+ *
+ */
 const ComponentVariable BytesPerMessageClearVariableMonitoring = {
     ControllerComponents::MonitoringCtrlr,
     std::optional<Variable>({"BytesPerMessage", "ClearVariableMonitoring"}),
 };
+/**
+ * @brief setVariableMonitoringRequest消息大小（以字节为单位）。
+ *
+ */
 const RequiredComponentVariable BytesPerMessageSetVariableMonitoring = {
     ControllerComponents::MonitoringCtrlr,
     std::optional<Variable>({"BytesPerMessage", "SetVariableMonitoring"}),
 };
+/**
+ * @brief 监控控制器组件 是否启用。
+ *
+ */
 const ComponentVariable MonitoringCtrlrEnabled = {
     ControllerComponents::MonitoringCtrlr,
     std::optional<Variable>({
         "Enabled",
     }),
 };
+/**
+ * @brief 显示当前使用的 MonitoringBase。有效取值为All,FactoryDefault,HardWiredOnly 之一
+ *
+ */
 const ComponentVariable ActiveMonitoringBase = {
     ControllerComponents::MonitoringCtrlr,
     std::optional<Variable>({"ActiveMonitoringBase"}),
 };
+/**
+ * @brief 显示当前使用的 MonitoringLevel。有效取值为 SetMonitoringLevelRequest 的严重性级别：0–9。
+ *
+ */
 const ComponentVariable ActiveMonitoringLevel = {
     ControllerComponents::MonitoringCtrlr,
     std::optional<Variable>({"ActiveMonitoringLevel"}),
 };
+/**
+ * @brief ClearVariableMonitoringRequest消息大小（以字节为单位）。
+ *
+ */
 const ComponentVariable ItemsPerMessageClearVariableMonitoring = {
     ControllerComponents::MonitoringCtrlr,
     std::optional<Variable>({"ItemsPerMessage", "ClearVariableMonitoring"}),
 };
+/**
+ * @brief 一条setVariableMonitoringRequest消息中可以发送的setMonitoringData元素的最大数量。
+ *
+ */
 const RequiredComponentVariable ItemsPerMessageSetVariableMonitoring = {
     ControllerComponents::MonitoringCtrlr,
     std::optional<Variable>({"ItemsPerMessage", "SetVariableMonitoring"}),
 };
+/**
+ * @brief 当设置了该参数且充电站处于离线状态时，充电站应当将由监控器触发的 notifyEventRequest
+ * 消息加入队列，只要其严重性等级小于或等于此处配置的严重性。该值范围为 0（紧急）到 9（调试）。
+ *
+ */
 const ComponentVariable OfflineQueuingSeverity = {
     ControllerComponents::MonitoringCtrlr,
     std::optional<Variable>({

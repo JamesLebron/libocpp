@@ -11,9 +11,13 @@
 namespace ocpp {
 namespace v2 {
 
+/// @brief 变量监控类型
 enum class VariableMonitorType {
+    /// @brief 硬编码监控器
     HardWiredMonitor,
+    /// @brief 预配置监控器
     PreconfiguredMonitor,
+    /// @brief 自定义监控器
     CustomMonitor,
 };
 

@@ -11,15 +11,27 @@
 
 namespace ocpp::v2 {
 
+/**
+ * @brief 检查是否触发了监控器
+ *
+ * @param monitor_meta 监控器元数据
+ * @param value_old 旧值
+ * @param value_new 新值
+ * @return true 触发了监控器
+ * @return false 没有触发监控器
+ */
 template <DataEnum T>
 bool triggers_monitor(const VariableMonitoringMeta& monitor_meta, const std::string& value_old,
                       const std::string& value_new) {
+    // 如果是bool 类型，则直接判断是否相等
     if constexpr (T == DataEnum::boolean) {
         return (value_old != value_new);
     } else {
+        // 其他类型需要先转换为具体类型
         auto raw_val_current = to_specific_type_auto<T>(value_new);
-
+        // 如果当前监视器的类型是 Delta（增量变化）
         if (monitor_meta.monitor.type == MonitorEnum::Delta) {
+            // Delta 类型的数据，判断监视器是否触发，通过计算“新值”和“引用值”之间的差距，得到“Delta”与监控值对比。
             if (monitor_meta.reference_value.has_value()) {
                 auto raw_val_reference = to_specific_type_auto<T>(monitor_meta.reference_value.value());
                 auto delta = std::abs(raw_val_reference - raw_val_current);
@@ -29,11 +41,17 @@ bool triggers_monitor(const VariableMonitoringMeta& monitor_meta, const std::str
                 EVLOG_error << "Invalid reference value for monitor: " << monitor_meta.monitor;
                 return false;
             }
-        } else if (monitor_meta.monitor.type == MonitorEnum::LowerThreshold) {
+        }
+        // 如果当前监视器的类型是 LowerThreshold（下限阈值）
+        else if (monitor_meta.monitor.type == MonitorEnum::LowerThreshold) {
             return (raw_val_current < monitor_meta.monitor.value);
-        } else if (monitor_meta.monitor.type == MonitorEnum::UpperThreshold) {
+        }
+        // 如果当前监视器的类型是 UpperThreshold（上限阈值）
+        else if (monitor_meta.monitor.type == MonitorEnum::UpperThreshold) {
             return (raw_val_current > monitor_meta.monitor.value);
-        } else {
+        }
+        // 其他类型返回 false
+        else {
             EVLOG_error << "Requested unsupported trigger monitor of type: "
                         << conversions::monitor_enum_to_string(monitor_meta.monitor.type);
             return false;
@@ -43,46 +61,70 @@ bool triggers_monitor(const VariableMonitoringMeta& monitor_meta, const std::str
     return false;
 }
 
+/**
+ * @brief 检查监控器是否激活
+ *
+ * @param active_monitoring_base  当前总体监控类型
+ * @param monitor_meta  监控器元数据
+ * @return true
+ * @return false
+ */
 bool is_monitor_active(MonitoringBaseEnum active_monitoring_base, const VariableMonitoringMeta& monitor_meta) {
-    // Skip monitors that are not active
+    // 如果传入的件事情不等于All 类型，就是 HardWiredOnly 或 FactoryDefault
     if (active_monitoring_base != MonitoringBaseEnum::All) {
-        // If we have the factory default option, skip all
-        // CustomMonitors (installed by the CSMS)
+        // 如果当前总体监控类型是 FactoryDefault（出厂默认）&& 传入的监视器的类型是
+        // CustomMonitor（自定义），说明传入的监视器没有被激活。
         if (active_monitoring_base == MonitoringBaseEnum::FactoryDefault &&
             monitor_meta.type == VariableMonitorType::CustomMonitor) {
             return false;
         }
 
-        // If we have the hardwired option, skip all non-hardwired
-        // monitors (that is CustomMonitor and PreconfiguredMonitor)
+        // 如果当前总体监控类型是 HardWiredOnly（仅硬编码）&& 传入的监视器的类型不是 HardWiredMonitor（硬编码监视器），
+        // 说明传入的监视器没有被激活。
         if (active_monitoring_base == MonitoringBaseEnum::HardWiredOnly &&
             monitor_meta.type != VariableMonitorType::HardWiredMonitor) {
             return false;
         }
     }
 
+    // 等于All 类型，说明所有监视器都激活，返回true
     return true;
 }
 
+/**
+ * @brief 获取下一个时钟对齐点
+ *
+ * @param monitor_interval 监控间隔
+ * @return std::chrono::time_point<std::chrono::system_clock> 下一个时钟对齐点
+ */
 std::chrono::time_point<std::chrono::system_clock> get_next_clock_aligned_point(float monitor_interval) {
+    // 将传入的浮点秒间隔转换为整秒的 duration
     auto monitor_seconds =
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::duration<float>(monitor_interval));
-
+    // 当前系统时间点
     auto sys_time_now = std::chrono::system_clock::now();
+    // 将当前时间向下取整到整小时（例如 2025-08-22 10:00:00）
     auto hours_now = std::chrono::floor<std::chrono::hours>(sys_time_now);
+
+    // 计算从本小时起已过的秒数（范围 0..3599）
     auto seconds_now = std::chrono::duration_cast<std::chrono::seconds>(sys_time_now - hours_now);
 
-    // Round next seconds, for ex at an interval of 900 while we are at second 2700 will yield
-    // the result is 3600, and that is a roll-over, we will call the next monitor at the precise hour
+    // 计算“下一个对齐的秒刻度”
+    // 逻辑：ceil(seconds_now / monitor_seconds) * monitor_seconds
+    // 例如：interval = 900（15min），seconds_now = 2700（00:45:00）时：
+    // ceil(2700/900) = 3 -> 3*900 = 2700（等于当前刻度）
+    // 若结果为 3600，则表示越过本小时（roll-over），需要对齐到下一整点小时
     auto next_seconds =
         (std::ceil((double)seconds_now.count() / (double)monitor_seconds.count()) * monitor_seconds).count();
 
     std::chrono::time_point<std::chrono::system_clock> aligned_timepoint;
-
+    // 如果 next_seconds >= 3600（已越过本小时）则对齐到下一个小时的整点
     if (next_seconds >= static_cast<decltype(next_seconds)>(3600)) {
         // If we rolled over, move to the next hour
         aligned_timepoint = (hours_now + std::chrono::hours(1));
-    } else {
+    }
+    // 否则返回本小时起加上计算得到的秒数的时间点
+    else {
         aligned_timepoint = (hours_now + std::chrono::duration_cast<std::chrono::seconds>(
                                              std::chrono::duration<decltype(next_seconds)>(next_seconds)));
     }
@@ -95,6 +137,16 @@ std::chrono::time_point<std::chrono::system_clock> get_next_clock_aligned_point(
     return aligned_timepoint;
 }
 
+/**
+ * @brief 创建通知事件消息体
+ *
+ * @param unique_id id
+ * @param reported_value 上报值
+ * @param component 组件
+ * @param variable 变量
+ * @param monitor_meta 监控元数据
+ * @return EventData 事件数据
+ */
 EventData create_notify_event(int32_t unique_id, const std::string& reported_value, const Component& component,
                               const Variable& variable, const VariableMonitoringMeta& monitor_meta) {
     EventData notify_event;
@@ -107,23 +159,32 @@ EventData create_notify_event(int32_t unique_id, const std::string& reported_val
     notify_event.timestamp = ocpp::DateTime();
     notify_event.actualValue = reported_value;
 
+    // 如果是[周期监控]或[周期时钟对齐监控]，触发类型为Periodic(周期)
     if (monitor_meta.monitor.type == MonitorEnum::Periodic ||
         monitor_meta.monitor.type == MonitorEnum::PeriodicClockAligned) {
         notify_event.trigger = EventTriggerEnum::Periodic;
-    } else if (monitor_meta.monitor.type == MonitorEnum::Delta) {
+    }
+    // 如果是[增量监控]，触发类型为Delta(增量)
+    else if (monitor_meta.monitor.type == MonitorEnum::Delta) {
         notify_event.trigger = EventTriggerEnum::Delta;
-    } else if (monitor_meta.monitor.type == MonitorEnum::UpperThreshold ||
-               monitor_meta.monitor.type == MonitorEnum::LowerThreshold) {
+    }
+    // 如果是[上阈值监控]或[下阈值监控]，触发类型为Alerting(告警)
+    else if (monitor_meta.monitor.type == MonitorEnum::UpperThreshold ||
+             monitor_meta.monitor.type == MonitorEnum::LowerThreshold) {
         notify_event.trigger = EventTriggerEnum::Alerting;
     } else {
         EVLOG_error << "Invalid monitor type of: " << conversions::monitor_enum_to_string(monitor_meta.monitor.type);
     }
-
+    // 如果是[硬编码监控]，通知类型为HardWiredMonitor(硬编码监控)
     if (monitor_meta.type == VariableMonitorType::HardWiredMonitor) {
         notify_event.eventNotificationType = EventNotificationEnum::HardWiredMonitor;
-    } else if (monitor_meta.type == VariableMonitorType::PreconfiguredMonitor) {
+    }
+    // 如果是[预配置监控]，通知类型为PreconfiguredMonitor(预配置监控)
+    else if (monitor_meta.type == VariableMonitorType::PreconfiguredMonitor) {
         notify_event.eventNotificationType = EventNotificationEnum::PreconfiguredMonitor;
-    } else if (monitor_meta.type == VariableMonitorType::CustomMonitor) {
+    }
+    // 如果是[自定义监控]，通知类型为CustomMonitor(自定义监控)
+    else if (monitor_meta.type == VariableMonitorType::CustomMonitor) {
         notify_event.eventNotificationType = EventNotificationEnum::CustomMonitor;
     } else {
         EVLOG_error << "Invalid monitor meta type of: " << static_cast<int>(monitor_meta.type);
@@ -146,25 +207,29 @@ MonitoringUpdater::~MonitoringUpdater() {
 }
 
 void MonitoringUpdater::start_monitoring() {
-    // Bind function to this instance
+    // 绑定变量变化的回调，提供给[设备模型]调用
     auto fn = std::bind(&MonitoringUpdater::on_variable_changed, this, std::placeholders::_1, std::placeholders::_2,
                         std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6,
                         std::placeholders::_7);
     device_model.register_variable_listener(std::move(fn));
 
+    // 绑定监控更新的回调，提供给[设备模型]调用
     auto fn_monitor =
         std::bind(&MonitoringUpdater::on_monitor_updated, this, std::placeholders::_1, std::placeholders::_2,
                   std::placeholders::_3, std::placeholders::_4, std::placeholders::_5, std::placeholders::_6);
     device_model.register_monitor_listener(std::move(fn_monitor));
 
-    // No point in starting the monitor if this variable does not exist. It will never start to exist later on.
+    // 根据监视器组件 是否开启，来判断是否需要启动定时器
     if (this->device_model.get_optional_value<bool>(ControllerComponentVariables::MonitoringCtrlrEnabled)
             .value_or(false)) {
+        // 获取 监视器-定时器 的执行时间间隔（这个值归属于：内部自定义组件）
         int process_interval_seconds =
             this->device_model.get_optional_value<int>(ControllerComponentVariables::MonitorsProcessingInterval)
                 .value_or(1);
 
         EVLOG_info << "Started monitoring timer with interval: " << process_interval_seconds;
+
+        // 设置 监视器-定时器 的执行时间间隔
         monitors_timer.interval(std::chrono::seconds(process_interval_seconds));
     } else {
         EVLOG_warning << "Attempted to start monitoring without 'MonitoringCtrlrEnabled'";
@@ -179,22 +244,37 @@ void MonitoringUpdater::process_triggered_monitors() {
     this->process_monitors_internal(false, true);
 }
 
+/**
+ * @brief 当监视器更新此方法被调用
+ *
+ * @param updated_monitor 已更新的监视器元数据
+ * @param component 组件
+ * @param variable 变量
+ * @param characteristics 变量特征
+ * @param attribute 变量属性
+ * @param current_value 当前值
+ */
 void MonitoringUpdater::on_monitor_updated(const VariableMonitoringMeta& updated_monitor, const Component& component,
                                            const Variable& variable, const VariableCharacteristics& characteristics,
                                            const VariableAttribute& attribute, const std::string& current_value) {
+
+    // 从 监视器列表 中查找已存在的监视器
     auto it = updater_monitors_meta.find(updated_monitor.monitor.id);
 
-    // Not contained, ignored
+    // 如果不包含，直接停止执行
     if (it == std::end(updater_monitors_meta)) {
         return;
     }
 
     auto& meta = it->second;
 
-    // Refresh monitor
+    // 更新 监视器元数据
     meta.monitor_meta = updated_monitor;
 
-    // N07.FR.11 - based on this we need to re-evaluate the monitor for
+    // N07.FR.11 当 在修改已设置的 UpperThreshold 或 LowerThreshold 类型的 VariableMonitor
+    // 时，充电站必须检查新的阈值是否已清除旧的阈值，或者监测值是否超过了新的阈值。
+
+    // - based on this we need to re-evaluate the monitor for
     // the Lower/UpperThreshold types
     if (updated_monitor.monitor.type == MonitorEnum::LowerThreshold ||
         updated_monitor.monitor.type == MonitorEnum::UpperThreshold) {
@@ -204,29 +284,52 @@ void MonitoringUpdater::on_monitor_updated(const VariableMonitoringMeta& updated
     }
 }
 
+/**
+ * @brief 评估监视器是否触发
+ *
+ * @param monitor_meta 监视器元数据
+ * @param component 组件
+ * @param variable 变量
+ * @param characteristics 变量特征
+ * @param attribute 变量属性
+ * @param value_previous 前一个值
+ * @param value_current 当前值
+ */
 void MonitoringUpdater::evaluate_monitor(const VariableMonitoringMeta& monitor_meta, const Component& component,
                                          const Variable& variable, const VariableCharacteristics& characteristics,
                                          const VariableAttribute& attribute, const std::string& value_previous,
                                          const std::string& value_current) {
-    // Don't care about periodic
+    // 周期监控 直接停止
     if (monitor_meta.monitor.type == MonitorEnum::Periodic or
         monitor_meta.monitor.type == MonitorEnum::PeriodicClockAligned) {
         return;
     }
-
+    // 定义 监控是否触发
     bool monitor_triggered = false;
     bool monitor_trivial = false;
 
-    // N07.FR.19 - Based on this it seems that OptionList, SequenceList, MemberList will
-    // cause a trigger if the value is changed regardless of the content (or monitor delta)
+    // N07.FR.19 - 当在某个 Component/Variable 组合上存在类型为 Delta 的监控，且该 Variable 不是 数值类型，并且该变量的
+    // Actual
+    // 属性自该监控设置时或自上次发送该事件通知以来（以较晚者为准）发生了变化时（注：对于非数值变量，如布尔、字符串或枚举，类型为
+    // Delta 的监控在变量发生变化时都会触发事件通知，与 monitorValue 的具体值无关），充电站 必须
+    // 为该被触发的监控发送一条 trigger 为 Delta 的 NotifyEventRequest。
+
+    // 解读说明：当变化类型是Delta 且
+    // 变量类型不是数值类型（boolean、string、dateTime、OptionList、MemberList、SequenceList）
+    // 时，不用去关心变化值，只要有变化，都要发送通知到CSMS
+
     if ((characteristics.dataType == DataEnum::boolean) || (characteristics.dataType == DataEnum::string) ||
         (characteristics.dataType == DataEnum::dateTime) || (characteristics.dataType == DataEnum::OptionList) ||
         (characteristics.dataType == DataEnum::MemberList) || (characteristics.dataType == DataEnum::SequenceList)) {
         monitor_triggered = triggers_monitor<DataEnum::boolean>(monitor_meta, value_previous, value_current);
         monitor_trivial = true;
-    } else if (characteristics.dataType == DataEnum::decimal) {
+    }
+    // 如果是数值类型，调用 triggers_monitor ，内部会转成double 再对比
+    else if (characteristics.dataType == DataEnum::decimal) {
         monitor_triggered = triggers_monitor<DataEnum::decimal>(monitor_meta, value_previous, value_current);
-    } else if (characteristics.dataType == DataEnum::integer) {
+    }
+    // 如果是整数类型，调用 triggers_monitor ，内部会转成int 再对比
+    else if (characteristics.dataType == DataEnum::integer) {
         monitor_triggered = triggers_monitor<DataEnum::integer>(monitor_meta, value_previous, value_current);
     } else {
         EVLOG_error << "Requested unsupported 'DataEnum' type: "
@@ -238,26 +341,28 @@ void MonitoringUpdater::evaluate_monitor(const VariableMonitoringMeta& monitor_m
                 << "] with previous value: [" << value_previous << "] and current: [" << value_current << "]";
 
     auto monitor_id = monitor_meta.monitor.id;
+    // 从监视器列表中查找已存在的监视器
     auto it = updater_monitors_meta.find(monitor_id);
 
     // Always update the current values is the trigger is found
+    // 找到监视器的话，更新对应监视器的 上一次的值和现在的值
     if (it != std::end(updater_monitors_meta)) {
         auto& triggered_meta = it->second;
 
         triggered_meta.value_previous = value_previous;
         triggered_meta.value_current = value_current;
     }
-
+    // 如果监视器触发
     if (monitor_triggered) {
         if (monitor_meta.monitor.type == MonitorEnum::Delta && monitor_trivial) {
             // 3.55. MonitorEnumType
-            // As per the spec, in case of a delta monitor that always triggered (bool/dateTime etc...)
-            // we must update the reference value to the new value, so that we don't always trigger
-            // this multiple times when it changes
+            // 根据规范，对于那些会始终触发的 delta 监控（例如 bool、dateTime 等），
+            // 我们必须将参考值更新为新的值，以免在值变化时重复多次触发。
 
-            // N07.FR.18 - "plus or minus monitorValue since the time that this monitor was set or
-            // since the last time this event notice was sent, whichever was last"
-            // A 'cleared' state has no value for a delta monitor
+            // N07.FR.18 - 当在某个 Component/Variable 组合上存在类型为 Delta 的监控，且该 Variable 是
+            // 数值类型，并且该变量的 Actual 属性自该监控设置时或自上次发送该事件通知以来（以较晚者为准）发生了超过正负
+            // monitorValue 的变化时，充电站 必须 为该被触发的监控发送一条 trigger 为 Delta 的 NotifyEventRequest。
+
             try {
                 EVLOG_debug << "Updated monitor: " << monitor_meta.monitor << " reference to: " << value_current;
 
@@ -268,8 +373,9 @@ void MonitoringUpdater::evaluate_monitor(const VariableMonitoringMeta& monitor_m
                 EVLOG_error << "Could not update delta monitor reference with exception: " << e.what();
             }
         }
-
+        // 如果没有找到监视器，说明可能是从设备模型新设置下来的监视器
         if (it == std::end(updater_monitors_meta)) {
+            // 构建监视器对象
             UpdaterMonitorMeta triggered_meta;
 
             triggered_meta.type = UpdateMonitorMetaType::TRIGGER;
@@ -291,18 +397,21 @@ void MonitoringUpdater::evaluate_monitor(const VariableMonitoringMeta& monitor_m
             metadata.is_event_generated = 0;
 
             triggered_meta.meta_trigger = metadata;
-
+            // 往监视器列表中插入新的监视器
             auto res = updater_monitors_meta.insert(std::pair{monitor_meta.monitor.id, std::move(triggered_meta)});
+            // 判断插入结果
             if (!res.second) {
                 EVLOG_warning << "Could not insert monitor to triggered monitor map!";
                 return;
             }
+            // 插入成功，将迭代器指向新插入的元素
             it = res.first;
 
             EVLOG_debug << "Variable: " << variable.name.get() << " with monitor: " << monitor_meta.monitor
                         << " triggered, inserted to updater list";
         }
 
+        // 从迭代器中取出监视器对象
         UpdaterMonitorMeta& triggered_data = it->second;
 
         // If we are in a 'not dangerous' a.k.a 'cleared' state
@@ -339,6 +448,17 @@ void MonitoringUpdater::evaluate_monitor(const VariableMonitoringMeta& monitor_m
     }
 }
 
+/**
+ * @brief 当变量值发生改变时调用
+ *
+ * @param monitor 变量所属-监控器列表
+ * @param component 组件
+ * @param variable 变量
+ * @param characteristics 变量特征
+ * @param attribute 变量属性
+ * @param value_previous 变量之前的值
+ * @param value_current 变量当前的值
+ */
 void MonitoringUpdater::on_variable_changed(const std::unordered_map<int64_t, VariableMonitoringMeta>& monitors,
                                             const Component& component, const Variable& variable,
                                             const VariableCharacteristics& characteristics,
@@ -347,33 +467,37 @@ void MonitoringUpdater::on_variable_changed(const std::unordered_map<int64_t, Va
     EVLOG_debug << "Variable: " << variable.name.get() << " changed value from: [" << value_previous << "] to: ["
                 << value_current << "]";
 
-    // Ignore non-actual values
+    // 只关心变量类型=Actual的变量，忽略Target、MaxSet、MinSet
+    //  Ignore non-actual values
     if (attribute.type.has_value() && attribute.type.value() != AttributeEnum::Actual) {
         return;
     }
 
-    // Iterate monitors and search for a triggered monitor
+    // 遍历监控器列表
     for (const auto& [monitor_id, monitor_meta] : monitors) {
-        // Evaluate the monitor
+        // 评估监视器是否有触发
         evaluate_monitor(monitor_meta, component, variable, characteristics, attribute, value_previous, value_current);
     }
 }
 
 void MonitoringUpdater::update_periodic_monitors_internal() {
     // Update the list of periodic monitors
+    // 获取设备模型中的周期监控器列表
     auto periodic_monitors = this->device_model.get_periodic_monitors();
 
+    // 遍历周期监控器列表
     for (auto& component_variable_monitors : periodic_monitors) {
         for (auto& periodic_monitor_meta : component_variable_monitors.monitors) {
-            // See if we already have the local monitor
+            // 查询监视器列表中周期监控器是否已经存在
             auto it = this->updater_monitors_meta.find(periodic_monitor_meta.monitor.id);
-
+            // 如果已经存在，直接跳出
             if (it != std::end(this->updater_monitors_meta)) {
                 // If we already contain it inside, skip
                 continue;
             }
 
             // If it is not found, add a new entry to our managed monitor list
+            // 创建新的周期监控器对象
             UpdaterMonitorMeta periodic_meta;
 
             periodic_meta.type = UpdateMonitorMetaType::PERIODIC;
@@ -382,22 +506,26 @@ void MonitoringUpdater::update_periodic_monitors_internal() {
             periodic_meta.variable = component_variable_monitors.variable;
             periodic_meta.monitor_meta = periodic_monitor_meta;
             periodic_meta.is_writeonly = 0;
-
+            // 如果是定时监控器
             if (periodic_monitor_meta.monitor.type == MonitorEnum::Periodic) {
-                // Set the trigger to the current time
+                // 设置监视器的上次触发时间到当前时间
                 periodic_meta.meta_periodic.last_trigger_steady = std::chrono::steady_clock::now();
-            } else if (periodic_monitor_meta.monitor.type == MonitorEnum::PeriodicClockAligned) {
-                // Snap to the closest monitor multiple
+            }
+            // 如果是周期性定时器
+            else if (periodic_monitor_meta.monitor.type == MonitorEnum::PeriodicClockAligned) {
+                // 设置监视器的下一个触发时间到下一个时钟对齐时间
                 periodic_meta.meta_periodic.next_trigger_clock_aligned =
                     get_next_clock_aligned_point(periodic_meta.monitor_meta.monitor.value);
                 EVLOG_debug << "First aligned timepoint for monitor ID: " << periodic_monitor_meta.monitor.id;
-            } else {
+            }
+            // 如果是其他类型的监控器，异常情况，抛出
+            else {
                 EVLOG_AND_THROW(std::runtime_error("Invalid type in periodic monitor list, should never happen!"));
             }
-
+            // 往监视器列表中插入新的周期监控器对象
             auto res = this->updater_monitors_meta.insert(
                 std::pair{periodic_monitor_meta.monitor.id, std::move(periodic_meta)});
-
+            // 如果插入失败，日志警告，继续下一个
             if (!res.second) {
                 EVLOG_warning << "Could not insert periodic monitor to internal monitor map!";
                 continue;
@@ -405,12 +533,12 @@ void MonitoringUpdater::update_periodic_monitors_internal() {
         }
     }
 
-    // Remove the monitors in our list that don't exist any more in the database
+    // 移除列表中数据库里已不存在的监视器，开始遍历
     for (auto it = std::begin(updater_monitors_meta); it != std::end(updater_monitors_meta);) {
         std::int32_t updater_meta_id = it->first;
         auto updater_meta_data = it->second;
 
-        // Ignore triggers
+        // 如果是触发型的监视器直接跳过
         if (updater_meta_data.type == UpdateMonitorMetaType::TRIGGER) {
             ++it;
             continue;
@@ -427,7 +555,7 @@ void MonitoringUpdater::update_periodic_monitors_internal() {
                                                  }) != std::end(monitors);
                          }) != std::end(periodic_monitors);
 
-        // If not found, erse from our list as not being relevant
+        // 如果没有找到，则从监视器列表中移除
         if (!found_in_new_periodics) {
             it = updater_monitors_meta.erase(it);
         } else {
@@ -440,82 +568,106 @@ void MonitoringUpdater::process_monitor_meta_internal(UpdaterMonitorMeta& update
     const auto& monitor_meta = updater_meta_data.monitor_meta;
     const auto& monitor = monitor_meta.monitor;
 
-    // Process if it is a periodic
+    // 如果是[周期类型]的监视器
     if (updater_meta_data.type == UpdateMonitorMetaType::PERIODIC) {
-        // Monitor seconds interval
+        // 取出[周期性定时器]的时间间隔
         auto monitor_seconds =
             std::chrono::duration_cast<std::chrono::seconds>(std::chrono::duration<float>(monitor.value));
 
-        // If we match the trigger time
+        // 定义[是否匹配时间]的变量
         bool matches_time = false;
-
+        // 如果是[周期性定时器]
         if (monitor.type == MonitorEnum::Periodic) {
+            // 取出当前时间
             auto current_time = std::chrono::steady_clock::now();
+            // 计算时间间隔
             auto delta = current_time - updater_meta_data.meta_periodic.last_trigger_steady;
-
+            // 如果时间间隔大于[周期性定时器]的时间间隔
             if (delta > monitor_seconds) {
-                // Update last time
+                // 更新上次触发时间
                 updater_meta_data.meta_periodic.last_trigger_steady = current_time;
+                // 匹配时间
                 matches_time = true;
             }
-        } else if (monitor.type == MonitorEnum::PeriodicClockAligned) {
+        }
+        // 如果是[时钟对齐的定时器]
+        else if (monitor.type == MonitorEnum::PeriodicClockAligned) {
             // 3.55
-            // PeriodicClockAligned Triggers an event notice every monitorValue
-            // seconds interval, starting from the nearest clock-aligned interval
-            // after this monitor was set. For example, a monitorValue of 900 will
-            // trigger event notices at 0, 15, 30 and 45 minutes after the hour, every hour.
-            auto current_time = std::chrono::system_clock::now();
+            // PeriodicClockAligned 会在每隔 monitorValue 秒的时间点触发一次事件通知，
+            // 从该监视器被设置后最近的整点对齐时间开始。
+            // 例如，若 monitorValue 为 900，则每小时的 0、15、30 和 45 分钟会触发事件通知。
 
+            // 取出当前时间
+            auto current_time = std::chrono::system_clock::now();
+            // 如果当前时间大于 [时钟对齐的定时器] 的预期下次执行时间
             if (current_time > updater_meta_data.meta_periodic.next_trigger_clock_aligned) {
+                // 计算当前时间与 [时钟对齐的定时器] 预期下次执行时间的时间间隔
                 auto distance = std::chrono::duration_cast<std::chrono::seconds>(
                                     current_time - updater_meta_data.meta_periodic.next_trigger_clock_aligned)
                                     .count();
 
-                // Handles with: N08.FR.03, events should be queued and
-                // send when the charger is back online
+                // N08.FR.06 当某个组件/变量组合上存在类型为 Periodic 的监视器，且从该监视器被设置或触发的时间起，已过去
+                // monitorValue 指定的秒数，充电站 必须 发送一个 NotifyEventRequest，其 trigger 为
+                // Periodic，对应被触发的监视器
+
+                // N08.FR.07 当某个组件/变量组合上存在类型为 PeriodicClockAligned
+                // 的监视器，且从该监视器被设置后的最近整点对齐时间开始，已过去 monitorValue
+                // 指定的秒数（例如，monitorValue 为 900 时，每小时的 0、15、30、45 分钟都会触发事件通知），充电站 必须
+                // 发送一个 NotifyEventRequest，其 trigger 为 Periodic，对应被触发的监视器
+
+                //  满足 N08.FR.06 或 N08.FR.07 - 监视器的严重性等级等于或低于配置变量
+                //  OfflineMonitoringEventQueueingSeverity 中设置的严重性等级 - 并且充电站处于离线状态
+                // TODO 此处功能未完成
                 if (distance > static_cast<decltype(distance)>(60)) {
                     EVLOG_warning << "Missed scheduled monitor time by: " << distance;
                 }
                 matches_time = true;
                 EVLOG_debug << "Reporting periodic monitor with id: " << monitor.id;
-
+                // 更新下一次触发时间
                 updater_meta_data.meta_periodic.next_trigger_clock_aligned =
                     get_next_clock_aligned_point(monitor.value);
             }
-        } else {
+        }
+        // 不可以发生的异常情况，需要抛出异常
+        else {
             // Should never happen
             EVLOG_AND_THROW(std::runtime_error(std::string("Invalid monitor type from: 'get_periodic_monitors': ") +
                                                conversions::monitor_enum_to_string(monitor.type)));
         }
-
+        // 如果[周期类型]的监视器判断为“符合条件”
         if (matches_time) {
+            // 组装EventData
+
             RequiredComponentVariable comp_var;
             comp_var.component = updater_meta_data.component;
             comp_var.variable = updater_meta_data.variable;
 
-            // This operation can cause a small stall, but only if this is triggered
+            // TODO 需要弄清楚这是什么意思？
+            // 该操作可能会引起短暂的停顿，但仅在被触发时才会发生。
             std::string current_value = this->device_model.get_value<std::string>(comp_var);
 
             EventData notify_event =
                 std::move(create_notify_event(this->unique_id++, current_value, updater_meta_data.component,
                                               updater_meta_data.variable, monitor_meta));
 
-            // Generate one event that will either be sent now, or later based on the offline state
+            // 生成一个事件，该事件将根据离线状态决定是立即发送还是稍后发送。
             updater_meta_data.generated_monitor_events.push_back(std::move(notify_event));
         }
-    } else if (updater_meta_data.type == UpdateMonitorMetaType::TRIGGER) {
-        // If we did not generate an event for this trigger, create the notify event
+    }
+    // 如果是[触发类型]的监视器
+    else if (updater_meta_data.type == UpdateMonitorMetaType::TRIGGER) {
+        // 如果尚未为此触发器生成事件，则创建通知事件。
         if (updater_meta_data.meta_trigger.is_event_generated == 0) {
-            // Until next state change, mark this event as generated
+            // “在下一次状态变化之前，将该事件标记为已生成。
             updater_meta_data.meta_trigger.is_event_generated = 1;
 
             std::string reported_value{};
 
-            // If the variable is marked as read-only then the value will NOT be reported
+            // 如果该变量被标记为只读，则其值不会被上报。
             if (updater_meta_data.is_writeonly == 0) {
                 reported_value = updater_meta_data.value_current;
             }
-
+            // 组装EventData数据
             EventData notify_event =
                 std::move(create_notify_event(unique_id++, reported_value, updater_meta_data.component,
                                               updater_meta_data.variable, updater_meta_data.monitor_meta));
@@ -663,26 +815,45 @@ void MonitoringUpdater::process_monitors_internal(bool allow_periodics, bool all
     }
 }
 
+/**
+ * @brief 监控控制器组件是否启用。
+ *
+ * @return true
+ * @return false
+ */
 bool MonitoringUpdater::is_monitoring_enabled() {
     return this->device_model.get_optional_value<bool>(ControllerComponentVariables::MonitoringCtrlrEnabled)
         .value_or(false);
 }
 
+/**
+ * @brief 获取监控控制器的状态信息。
+ *
+ * @param out_is_offline 监控控制器是否离线。
+ * @param out_offline_severity 离线时的严重程度。
+ * @param out_active_monitoring_level 活动监控级别。
+ * @param out_active_monitoring_base 当前总体监控类型： All,FactoryDefault,HardWiredOnly,
+ */
 void MonitoringUpdater::get_monitoring_info(bool& out_is_offline, int& out_offline_severity,
                                             int& out_active_monitoring_level,
                                             MonitoringBaseEnum& out_active_monitoring_base) {
     // Persist OfflineMonitoringEventQueuingSeverity even when offline if we have a problem
+    // 是否在线
     out_is_offline = is_chargepoint_offline();
 
     // By default (if the comp is missing we are reporting up to 'Warning')
+
+    // 离线时的严重程度
     out_offline_severity =
         this->device_model.get_optional_value<int>(ControllerComponentVariables::OfflineQueuingSeverity)
             .value_or(MonitoringLevelSeverity::Warning);
 
+    // 活动监控级别
     out_active_monitoring_level =
         this->device_model.get_optional_value<int>(ControllerComponentVariables::ActiveMonitoringLevel)
             .value_or(MonitoringLevelSeverity::MAX);
 
+    // 当前总体监控类型
     std::string active_monitoring_base_string =
         this->device_model.get_optional_value<std::string>(ControllerComponentVariables::ActiveMonitoringBase)
             .value_or(conversions::monitoring_base_enum_to_string(MonitoringBaseEnum::All));

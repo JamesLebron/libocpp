@@ -844,6 +844,11 @@ std::vector<SetMonitoringResult> DeviceModel::set_monitors(const std::vector<Set
     return set_monitors_res;
 }
 
+/**
+ * @brief 获取设备模型中的周期监控器列表
+ *
+ * @return std::vector<VariableMonitoringPeriodic>
+ */
 std::vector<VariableMonitoringPeriodic> DeviceModel::get_periodic_monitors() {
     std::vector<VariableMonitoringPeriodic> periodics;
 

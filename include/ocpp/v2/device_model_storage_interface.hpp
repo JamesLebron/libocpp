@@ -15,14 +15,24 @@
 namespace ocpp {
 namespace v2 {
 
-/// \brief Helper struct that holds database only values that don't have spec coverage
+/// \brief 辅助结构体，用于存放仅存在于数据库中、且未在规范中覆盖的值。
 struct VariableMonitoringMeta {
+    /// @brief 监控数据
     VariableMonitoring monitor;
+    /// @brief 变量监控类型，包括 硬编码监控器、预配置监控器和自定义监控器
     VariableMonitorType type;
+    /// @brief 引用值
     std::optional<std::string> reference_value;
 };
 
 /// \brief Helper struct that contains all monitors related to a variable that are of a periodic type
+/**
+ * @brief 周期监控器结构体
+ *
+ * @param component 组件
+ * @param variable 变量
+ * @param monitors 监控器列表
+ */
 struct VariableMonitoringPeriodic {
     Component component;
     Variable variable;
